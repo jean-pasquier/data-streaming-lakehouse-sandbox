@@ -1,0 +1,185 @@
+volumes:
+  minio:
+  zookeeper:
+  fluss-tablet:
+  shared-tmpfs:
+    driver: local
+    driver_opts:
+      type: "tmpfs"
+      device: "tmpfs"
+
+
+services:
+
+  ### MinIO datalake & tiered storage ? ###
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    environment:
+      - MINIO_ROOT_USER=root
+      - MINIO_ROOT_PASSWORD=root-pwd
+    command: [ "server", "--console-address", ":9001", "/data" ]
+    volumes:
+      - minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: [ "CMD", "mc", "ready", "local" ]
+      interval: 5s
+      timeout: 10s
+      retries: 2
+      start_period: 15s
+
+  minio-init:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: on-failure
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      /usr/bin/mc alias set dockerminio http://minio:9000 root root-pwd;
+      /usr/bin/mc mb --ignore-existing dockerminio/poc-data-fluss;
+      exit 0;
+      "
+
+
+  
+
+  ### Zookeeper ###
+
+  zookeeper:
+    image: zookeeper:3.9.2
+    restart: always
+    volumes:
+      - zookeeper:/data
+
+  ### Fluss cluster ####
+
+  fluss-coordinator:
+    build:
+      context: dockers
+      dockerfile: fluss.Dockerfile
+    command: coordinatorServer
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://fluss-coordinator:9123
+        env.log.level: DEBUG
+        remote.data.dir: /tmp/fluss/remote
+        datalake.format: paimon
+        datalake.paimon.metastore: filesystem
+        datalake.paimon.warehouse: s3://poc-data-fluss/data
+        datalake.paimon.s3.endpoint: http://minio:9000
+        datalake.paimon.s3.access-key: root
+        datalake.paimon.s3.secret-key: root-pwd
+        datalake.paimon.s3.path.style.access: true
+    ports:
+      - "9123:9123"
+    volumes:
+      - "shared-tmpfs:/tmp/fluss"
+    depends_on:
+      zookeeper:
+        condition: service_started
+
+
+  fluss-tablet:
+    build:
+      context: dockers
+      dockerfile: fluss.Dockerfile
+    command: tabletServer
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: FLUSS://fluss-tablet:9123
+        tablet-server.id: 0
+        env.log.level: DEBUG
+        kv.snapshot.interval: 5min
+        data.dir: /tmp/fluss/data/
+        remote.data.dir: /tmp/fluss/remote
+        datalake.format: paimon
+        datalake.paimon.metastore: filesystem
+        datalake.paimon.warehouse: s3://poc-data-fluss/data
+        datalake.paimon.s3.endpoint: http://minio:9000
+        datalake.paimon.s3.access-key: root
+        datalake.paimon.s3.secret-key: root-pwd
+        datalake.paimon.s3.path.style.access: true
+    ports:
+      - "9124:9123"
+    volumes:
+      - "shared-tmpfs:/tmp/fluss"
+    depends_on:
+      - fluss-coordinator
+
+
+  ### Flink cluster ###
+
+  flink-jobmanager:
+    build:
+      context: dockers
+      dockerfile: flink.Dockerfile
+    ports:
+      - "8083:8081"
+    command: jobmanager
+    volumes:
+      - "shared-tmpfs:/tmp/fluss"
+      - ./sql:/opt/flink/sql/:ro
+    environment:
+      - AWS_ACCESS_KEY=root
+      - AWS_SECRET_ACCESS_KEY=root-pwd
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        rest.port: 8081
+        s3.aws.credentials.provider: com.amazonaws.auth.EnvironmentVariableCredentialsProvider
+        fs.s3.aws.credentials.provider: com.amazonaws.auth.EnvironmentVariableCredentialsProvider
+        s3.endpoint: http://minio:9000
+        s3.region: local-01
+        s3.access-key: root
+        s3.secret-key: root-pwd
+        s3.path.style.access: true
+        s3.connection.maximum: 100
+        fs.s3a.endpoint: http://minio:9000
+        fs.s3a.access.key: root
+        fs.s3a.secret.key: root-pwd
+        fs.s3a.region: local-01
+        fs.s3a.path.style.access: true
+        fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider            
+
+
+  flink-taskmanager:
+    build:
+      context: dockers
+      dockerfile: flink.Dockerfile
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    volumes:
+      - "shared-tmpfs:/tmp/fluss"
+    environment:
+      - ROOT_LOG_LEVEL=DEBUG
+      - AWS_ACCESS_KEY=root
+      - AWS_SECRET_ACCESS_KEY=root-pwd
+      - |
+        FLINK_PROPERTIES= 
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 12
+        taskmanager.memory.process.size: 2048m
+        taskmanager.memory.framework.off-heap.size: 512m
+        s3.aws.credentials.provider: com.amazonaws.auth.EnvironmentVariableCredentialsProvider
+        fs.s3.aws.credentials.provider: com.amazonaws.auth.EnvironmentVariableCredentialsProvider
+        s3.endpoint: http://minio:9000
+        s3.region: local-01
+        s3.access-key: root
+        s3.secret-key: root-pwd
+        s3.path.style.access: true
+        s3.connection.maximum: 100
+        fs.s3a.endpoint: http://minio:9000
+        fs.s3a.access.key: root
+        fs.s3a.secret.key: root-pwd
+        fs.s3a.region: local-01
+        fs.s3a.path.style.access: true
+        fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider

@@ -1,0 +1,14 @@
+.DS_Store
+.idea
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+**/.jar
+
+# Virtual environments
+.venv
+
+**/.ipynb_checkpoints
