@@ -84,6 +84,13 @@ Ctrl+D to exit
 ```
 
 
+## Next steps
+
+* [ ] Setup remote tiering for fluss internal data
+* [ ] Try Iceberg integration instead of Paimon
+* [ ] Run some performance benchmarks
+
+
 ## Acknowledgments
 
 * [fluss quickstart](https://fluss.apache.org/docs/quickstart/lakehouse/)
